@@ -94,7 +94,7 @@ class _HRTempScreenState extends State<HRTempScreen> {
       timestamps.add(now);
 
       final age = now.difference(timestamps.first).inSeconds.toDouble();
-      history.add(FlSpot(-age, value.toDouble()));
+      history.add(FlSpot(age, value.toDouble()));
       csvLines.add("$timestamp,$value");
     });
   }
@@ -109,10 +109,13 @@ class _HRTempScreenState extends State<HRTempScreen> {
   Widget buildChart() {
     if (history.isEmpty) return const SizedBox.shrink();
 
-    final minX = history.map((e) => e.x).reduce((a, b) => a < b ? a : b); // –N秒
-    final maxX = 0.0; // 現在時刻は0秒
+    final minX = 0.0;
+    final maxX = history.map((e) => e.x).reduce((a, b) => a > b ? a : b);
     final interval = (maxX - minX) / 10;
     final safeInterval = interval == 0 ? 1.0 : interval;
+
+    final showInMinutes = minX.abs() >= 600;
+    final showInHours = minX.abs() >= 36000;
 
     return LineChart(
       LineChartData(
@@ -126,15 +129,15 @@ class _HRTempScreenState extends State<HRTempScreen> {
               showTitles: true,
               interval: safeInterval,
               getTitlesWidget: (value, meta) {
-                final seconds = value.abs().toInt();
-                if(seconds >= 36000){
-                  final hours = seconds ~/ 3600;
+                final secondsN = (maxX - value).round();
+                if(showInHours){
+                  final hours = secondsN ~/ 3600;
                   return Text("${hours}h", style:  const TextStyle(fontSize: 10),);
-                }else if(seconds >= 600) {
-                  final minutes = seconds ~/ 60;
+                }else if(showInMinutes) {
+                  final minutes = secondsN ~/ 60;
                   return Text("${minutes}m", style: const TextStyle(fontSize: 10),);
                 }else{
-                  return Text("${seconds}s", style: const TextStyle(fontSize: 10),);
+                  return Text("${secondsN}s", style: const TextStyle(fontSize: 10),);
                 }
               },
               reservedSize: 30,
