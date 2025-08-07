@@ -3,10 +3,11 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+
+const int maxHistoryPoints = 8640;
 
 void main() => runApp(const MyApp());
 
@@ -23,11 +24,17 @@ class HRTempScreen extends StatefulWidget {
 }
 
 Future<void> requestPermissions() async {
-  await [
+  Map<Permission, PermissionStatus> statuses = await [
     Permission.bluetoothScan,
     Permission.bluetoothConnect,
     Permission.location,
+    Permission.storage, // ← ファイル保存にも必要なら追加
   ].request();
+
+  if (statuses.values.any((status) => !status.isGranted)) {
+    // 必要ならダイアログなどで警告表示も検討
+    debugPrint("Some permissions not granted!");
+  }
 }
 
 class _HRTempScreenState extends State<HRTempScreen> {
@@ -39,30 +46,76 @@ class _HRTempScreenState extends State<HRTempScreen> {
   List<FlSpot> history = [];
   List<DateTime> timestamps = [];
   List<String> csvLines = ["timestamp,value"];
-  int currentValue = 0;
+  String currentValue = "--";
+  String lastDate = "----";
   int index = 0;
+
+  String connectionState = "Disconnect.";
+  bool _isScanning = false;
+  StreamSubscription<BluetoothConnectionState>? _connectionSub;
 
   @override
   void initState() {
     super.initState();
     WakelockPlus.enable();
-    requestPermissions();
+    initAsync();
+  }
+
+  @override
+  void dispose(){
+    _connectionSub?.cancel();
+    device?.disconnect();
+    FlutterBluePlus.stopScan();
+    print("*************** DISPOSED ****************");
+    super.dispose();
+  }
+
+  Future <void> initAsync() async {
+    await requestPermissions();
     scanAndConnect();
   }
 
   void scanAndConnect() async {
+
+    if (_isScanning) return;
+    _isScanning = true;
+    setState(() => connectionState = "Scanning...");
+    
+    bool found = false;
     FlutterBluePlus.startScan(timeout: const Duration(seconds: 60));
     print("scan start.");
     FlutterBluePlus.scanResults.listen((results) async {
       for (var r in results) {
-        print(r.device.advName);
         if (r.device.advName == targetName) {
+          found = true;
           await FlutterBluePlus.stopScan();
+          setState(() => connectionState = "Connecting...");
           await r.device.connect();
           setState(() => device = r.device);
+
+          //切断監視
+          _connectionSub?.cancel();  // 前のリスナーを解除
+          _connectionSub = device?.connectionState.listen((state) async {
+            if (state == BluetoothConnectionState.disconnected) {
+              setState(() => connectionState = "Disconnected");
+              await Future.delayed(const Duration(seconds: 2));
+              scanAndConnect();  // 再接続
+            } else if (state == BluetoothConnectionState.connected) {
+              setState(() => connectionState = "Connected");
+            }
+          });
+
           discoverServices();
           break;
         }
+      }
+    });
+
+    Future.delayed(const Duration(seconds: 70), (){
+      if(!found){
+        print("Device not found. Retry Scanning...");
+        _isScanning = false;
+        scanAndConnect();
       }
     });
   }
@@ -76,6 +129,7 @@ class _HRTempScreenState extends State<HRTempScreen> {
           characteristic = c;
           await c.setNotifyValue(true);
           c.value.listen(onDataReceived);
+          setState(() => connectionState = "Connected.");
           return;
         }
       }
@@ -87,23 +141,33 @@ class _HRTempScreenState extends State<HRTempScreen> {
 
     final value = ByteData.sublistView(Uint8List.fromList(data)).getUint16(0, Endian.little);
     final now = DateTime.now();
-    final timestamp = now.toIso8601String();
+    final timestamp = now.toIso8601String().replaceFirst('T', ' ').split('.').first;
+
+    print(timestamp);
 
     setState(() {
-      currentValue = value;
+      currentValue = value.toString();
+      lastDate = timestamp;
       timestamps.add(now);
 
       final age = now.difference(timestamps.first).inSeconds.toDouble();
       history.add(FlSpot(age, value.toDouble()));
+      if (history.length >= maxHistoryPoints) {
+        history.removeAt(0);
+        timestamps.removeAt(0);
+      }
       csvLines.add("$timestamp,$value");
     });
-  }
 
-  Future<void> saveToCSV() async {
-    final directory = await getApplicationDocumentsDirectory();
-    final file = File("${directory.path}/hr_temp_log.csv");
-    await file.writeAsString(csvLines.join("\n"));
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("CSV saved!")));
+    final directory = Directory("/storage/emulated/0/Download");
+    final dateStr = DateTime.now().toIso8601String().split('T').first;
+    print(dateStr);
+    final file = File("${directory.path}/${dateStr}_hr_temp_log.csv");
+
+    if (!await file.exists()){
+      await file.writeAsString("date,temp\n");
+    }
+    await file.writeAsString("$timestamp,$value\n", mode: FileMode.append);
   }
 
   Widget buildChart() {
@@ -114,8 +178,8 @@ class _HRTempScreenState extends State<HRTempScreen> {
     final interval = (maxX - minX) / 10;
     final safeInterval = interval == 0 ? 1.0 : interval;
 
-    final showInMinutes = minX.abs() >= 600;
-    final showInHours = minX.abs() >= 36000;
+    final showInMinutes = maxX.abs() >= 600;
+    final showInHours = maxX.abs() >= 36000;
 
     return LineChart(
       LineChartData(
@@ -181,17 +245,20 @@ class _HRTempScreenState extends State<HRTempScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          Text(connectionState, style: const TextStyle(fontSize: 16),),
+          const SizedBox(height: 8,),
           Row(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               Text("Current Value: ", style: const TextStyle(fontSize: 24)),
-              Text("$currentValue", style: const TextStyle(fontSize: 48, fontWeight: FontWeight.bold)),
+              Text(currentValue, style: const TextStyle(fontSize: 48, fontWeight: FontWeight.bold)),
               Text(" ℃", style: const TextStyle(fontSize: 24)),
             ],
           ),
+          const SizedBox(height: 8,),
+          Text("Last Update: $lastDate", style: TextStyle(fontSize: 16),),
           const SizedBox(height: 16),
           Expanded(child: history.isEmpty ? const Text("No data yet") : buildChart()),
-          ElevatedButton(onPressed: saveToCSV, child: const Text("Save CSV")),
         ],
       ),
     ),

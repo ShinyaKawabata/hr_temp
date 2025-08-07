@@ -1,4 +1,4 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
     <!-- Tell Google Play Store that your app uses Bluetooth LE
         Set android:required="true" if bluetooth is necessary -->
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
@@ -15,6 +15,14 @@
 
     <!-- legacy for Android 9 or lower -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" android:maxSdkVersion="28" />
+
+    <!-- android/app/src/main/AndroidManifest.xml -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+                     android:maxSdkVersion="28" />
+
+    <!-- 端末によって必要になる可能性がある -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage"/>
+
 
     <application
         android:label="hr_temp"
